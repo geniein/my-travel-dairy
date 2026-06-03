@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>파스텔 저니 - 3D 여행 일기</title>
+    <meta name="description" content="3D 지구 상에서 나의 소중한 여행 기록들을 모아보고 관리하는 나만의 감성 3D 여행 다이어리" />
+    <!-- Cesium Stylesheet -->
+    <link href="/cesium/Widgets/widgets.css" rel="stylesheet">
+    <!-- Google Fonts: Outfit & Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  </head>
+  <body>
+    <div id="app">
+      <!-- 3D Earth Container -->
+      <div id="cesiumContainer"></div>
+
+      <!-- Add Pin Mode Indicator Banner -->
+      <div class="mode-banner" id="modeBanner">
+        <span class="mode-banner-icon">📍</span>
+        <span class="mode-banner-text">지구에서 핀을 꽂을 위치를 클릭해 주세요.</span>
+        <button class="btn-cancel-mode" id="btnCancelMode">추가 취소</button>
+      </div>
+
+      <!-- Overlay Glassmorphism Sidebar -->
+      <aside class="sidebar-card" id="sidebar">
+        <header class="sidebar-header">
+          <span class="badge">Travel Globe</span>
+          <h1 class="main-title">Pastel Journey</h1>
+          <p class="subtitle">3D 지구 위로 그리는 나만의 여행 기록</p>
+        </header>
+
+        <section class="diary-summary">
+          <div class="summary-item">
+            <span class="summary-label">기록된 여행지</span>
+            <span class="summary-value" id="visitedCount">0</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">여행 국가</span>
+            <span class="summary-value" id="countryCount">0</span>
+          </div>
+        </section>
+
+        <div class="divider"></div>
+
+        <section class="destination-list">
+          <h2 class="section-title">최근 다녀온 여행지</h2>
+          <div class="scroll-container" id="destinationContainer">
+            <!-- Dynamic items go here -->
+            <div class="empty-state">
+              <p>아직 등록된 여행지가 없습니다.</p>
+              <p class="helper-text">아래 버튼으로 새 여행지를 추가해보세요!</p>
+            </div>
+          </div>
+        </section>
+
+        <footer class="sidebar-footer">
+          <button class="btn btn-primary" id="btnAddPin">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
+            새로운 발자국 남기기
+          </button>
+        </footer>
+      </aside>
+
+      <!-- Toast Notification -->
+      <div class="toast-notification" id="toast">
+        <span id="toastMessage">환영합니다! 지도를 움직여 보세요.</span>
+      </div>
+
+      <!-- Add Pin Modal -->
+      <div class="modal-backdrop" id="modalBackdrop">
+        <div class="modal-card">
+          <h2 class="modal-title">새로운 발자국 남기기</h2>
+          <p class="modal-subtitle">지구 어딘가에 소중한 추억을 기록해보세요.</p>
+          
+          <form id="pinForm">
+            <div class="form-group">
+              <label for="inputTitle">여행지 이름</label>
+              <input type="text" id="inputTitle" placeholder="예: 프랑스 파리 에펠탑" required autocomplete="off" />
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="inputLat">위도 (Latitude)</label>
+                <input type="number" id="inputLat" step="any" min="-90" max="90" required placeholder="예: 48.8584" />
+              </div>
+              <div class="form-group">
+                <label for="inputLng">경도 (Longitude)</label>
+                <input type="number" id="inputLng" step="any" min="-180" max="180" required placeholder="예: 2.2945" />
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="inputDesc">한 줄 추억</label>
+              <textarea id="inputDesc" placeholder="이곳에서 어떤 추억을 만드셨나요?" rows="3" required></textarea>
+            </div>
+
+            <div class="modal-actions">
+              <button type="button" class="btn btn-secondary" id="btnCancelModal">취소</button>
+              <button type="submit" class="btn btn-primary">등록하기</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
