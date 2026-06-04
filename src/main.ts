@@ -7,6 +7,7 @@ declare global {
 window.CESIUM_BASE_URL = '/cesium/';
 
 import * as Cesium from 'cesium';
+import { registerPlugin, Capacitor } from '@capacitor/core';
 import './style.css';
 
 // TypeScript Type Definitions
@@ -31,6 +32,9 @@ const countriesDataSource = new Cesium.GeoJsonDataSource();
 let activePhoto: GalleryPhoto | null = null;
 let activePhotoPinEntity: Cesium.Entity | null = null;
 let selectedPinId: string | null = null;
+let myLocationEntity: Cesium.Entity | null = null;
+let myLocationLat: number | null = null;
+let myLocationLng: number | null = null;
 let isShowPhotoPreviews = true;
 const savedShowPreviews = localStorage.getItem('show_photo_previews');
 if (savedShowPreviews) {
@@ -60,6 +64,20 @@ const btnToggleSpin = document.getElementById('btnToggleSpin') as HTMLButtonElem
 const spinButtonText = document.getElementById('spinButtonText') as HTMLSpanElement;
 const btnMode3D = document.getElementById('btnMode3D') as HTMLButtonElement;
 const btnMode2D = document.getElementById('btnMode2D') as HTMLButtonElement;
+
+// Mobile Sidebar DOM Elements
+const sidebarEl = document.getElementById('sidebar') as HTMLElement;
+const btnSidebarToggle = document.getElementById('btnSidebarToggle') as HTMLButtonElement;
+const btnSidebarClose = document.getElementById('btnSidebarClose') as HTMLButtonElement;
+const sidebarBackdrop = document.getElementById('sidebarBackdrop') as HTMLDivElement;
+const btnMyLocation = document.getElementById('btnMyLocation') as HTMLButtonElement;
+
+function closeMobileSidebar(): void {
+  if (sidebarEl && sidebarBackdrop) {
+    sidebarEl.classList.remove('active');
+    sidebarBackdrop.classList.remove('active');
+  }
+}
 
 // Photo Upload Modal Elements
 const inputPhotoFile = document.getElementById('inputPhotoFile') as HTMLInputElement;
@@ -326,6 +344,45 @@ const renderPinsOnGlobe = (): void => {
     });
   }
 
+  // Re-add My Location marker if it exists
+  if (myLocationLat !== null && myLocationLng !== null) {
+    myLocationEntity = viewer.entities.add({
+      position: Cesium.Cartesian3.fromDegrees(myLocationLng, myLocationLat),
+      point: {
+        pixelSize: 14,
+        color: Cesium.Color.RED, // Simple red dot
+        outlineColor: Cesium.Color.WHITE,
+        outlineWidth: 3,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY
+      }
+    });
+  } else {
+    myLocationEntity = null;
+  }
+
+  // Add point entities for scanned gallery photos (Cyan camera markers)
+  allPhotos.forEach((photo) => {
+    const position = Cesium.Cartesian3.fromDegrees(photo.lng, photo.lat);
+    viewer.entities.add({
+      id: photo.id, // e.g. "gp_123"
+      position: position,
+      point: {
+        pixelSize: 12,
+        color: Cesium.Color.fromCssColorString('#06b6d4'), // Cyan
+        outlineColor: Cesium.Color.WHITE,
+        outlineWidth: 2,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY
+      },
+      label: {
+        text: '📸',
+        font: '10px Inter, sans-serif',
+        verticalOrigin: Cesium.VerticalOrigin.CENTER,
+        horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY
+      }
+    });
+  });
+
   // Clear existing travel pin DOM overlays
   if (travelPinOverlaysContainer) {
     travelPinOverlaysContainer.innerHTML = '';
@@ -461,20 +518,17 @@ const updateSidebarList = (): void => {
     // Click handler to zoom to coordinates
     card.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).closest('.btn-delete-pin')) return;
+      closeMobileSidebar();
       zoomToPin(pin);
-      if (pin.photoUrl) {
-        const date = new Date(pin.createdAt);
-        const dateString = `${date.getFullYear()}.${String(date.getMonth() + 1).padStart(2, '0')}.${String(date.getDate()).padStart(2, '0')}`;
-        showPhotoPreview({
-          id: pin.id,
-          url: pin.photoUrl,
-          lat: pin.lat,
-          lng: pin.lng,
-          dateString: dateString
-        });
-      } else {
-        clearPhotoPreview();
-      }
+      const date = new Date(pin.createdAt);
+      const dateString = `${date.getFullYear()}.${String(date.getMonth() + 1).padStart(2, '0')}.${String(date.getDate()).padStart(2, '0')}`;
+      showPhotoPreview({
+        id: pin.id,
+        url: pin.photoUrl || '',
+        lat: pin.lat,
+        lng: pin.lng,
+        dateString: pin.photoUrl ? dateString : pin.title
+      });
     });
 
     // Delete handler
@@ -514,6 +568,7 @@ const deletePin = (id: string): void => {
 // Toggle Pin Add Mode
 const enableAddPinMode = (): void => {
   isAddPinMode = true;
+  closeMobileSidebar();
   btnAddPin.classList.add('active-mode');
   modeBanner.classList.add('active');
   cesiumContainer.classList.add('add-pin-mode');
@@ -555,24 +610,32 @@ screenSpaceHandler.setInputAction((click: { position: Cesium.Cartesian2 }) => {
       const clickedPin = pins.find(p => p.id === pickedObject.id.id);
       if (clickedPin) {
         zoomToPin(clickedPin);
-        if (clickedPin.photoUrl) {
-          const date = new Date(clickedPin.createdAt);
-          const dateString = `${date.getFullYear()}.${String(date.getMonth() + 1).padStart(2, '0')}.${String(date.getDate()).padStart(2, '0')}`;
-          showPhotoPreview({
-            id: clickedPin.id,
-            url: clickedPin.photoUrl,
-            lat: clickedPin.lat,
-            lng: clickedPin.lng,
-            dateString: dateString
-          });
-        } else {
-          clearPhotoPreview();
-        }
-      } else if (activePhotoPinEntity && pickedObject.id === activePhotoPinEntity && activePhoto) {
-        viewer.camera.flyTo({
-          destination: Cesium.Cartesian3.fromDegrees(activePhoto.lng, activePhoto.lat, 1000.0),
-          duration: 1.5
+        const date = new Date(clickedPin.createdAt);
+        const dateString = `${date.getFullYear()}.${String(date.getMonth() + 1).padStart(2, '0')}.${String(date.getDate()).padStart(2, '0')}`;
+        showPhotoPreview({
+          id: clickedPin.id,
+          url: clickedPin.photoUrl || '',
+          lat: clickedPin.lat,
+          lng: clickedPin.lng,
+          dateString: clickedPin.photoUrl ? dateString : clickedPin.title
         });
+      } else {
+        // Check if it's a gallery photo pin
+        const clickedPhoto = allPhotos.find(p => p.id === pickedObject.id.id);
+        if (clickedPhoto) {
+          stopRotation();
+          viewer.camera.flyTo({
+            destination: Cesium.Cartesian3.fromDegrees(clickedPhoto.lng, clickedPhoto.lat, 1000.0),
+            duration: 2.0
+          });
+          showPhotoPreview(clickedPhoto);
+          showToast('사진첩 이미지를 선택했습니다. 카드를 눌러 발자국을 등록해보세요! 📸');
+        } else if (activePhotoPinEntity && pickedObject.id === activePhotoPinEntity && activePhoto) {
+          viewer.camera.flyTo({
+            destination: Cesium.Cartesian3.fromDegrees(activePhoto.lng, activePhoto.lat, 1000.0),
+            duration: 1.5
+          });
+        }
       }
     } else {
       clearPhotoPreview();
@@ -932,6 +995,7 @@ const renderSearchResults = (results: SearchResult[]): void => {
 
     item.addEventListener('click', () => {
       stopRotation();
+      closeMobileSidebar();
       
       // Zoom camera to searched location
       viewer.camera.flyTo({
@@ -999,6 +1063,38 @@ interface GalleryPhoto {
   lng: number;
   dateString: string;
 }
+
+interface GalleryScannerPluginType {
+  scanGallery(): Promise<{ photos: GalleryPhoto[] }>;
+}
+
+const GalleryScanner = registerPlugin<GalleryScannerPluginType>('GalleryScanner');
+
+const scanGalleryPhotos = async (): Promise<void> => {
+  if (Capacitor.getPlatform() === 'web') {
+    console.log('Running on web. Keeping mock photos.');
+    return;
+  }
+
+  try {
+    showToast('기기 갤러리에서 위치 정보가 있는 사진을 탐색 중... 📸');
+    const result = await GalleryScanner.scanGallery();
+    if (result.photos && result.photos.length > 0) {
+      allPhotos = result.photos.map(photo => ({
+        ...photo,
+        url: Capacitor.convertFileSrc(photo.url)
+      }));
+      updateVisiblePhotos();
+      renderPinsOnGlobe(); // Render gallery photo pins directly on the map
+      showToast(`성공: 갤러리 사진 ${allPhotos.length}장을 동기화했습니다. 📸`);
+    } else {
+      showToast('위치 정보(GPS)가 포함된 사진이 없습니다. 카메라 앱의 "위치 태그" 설정을 켜주세요! 📸');
+    }
+  } catch (err: any) {
+    console.error('Failed to scan gallery photos:', err);
+    showToast('갤러리 접근 권한이 필요합니다. 🔒');
+  }
+};
 
 // Global photo list (pre-populated with mock data for preview/testing)
 let allPhotos: GalleryPhoto[] = [
@@ -1128,9 +1224,19 @@ const showPhotoPreview = (photo: GalleryPhoto): void => {
   const overlayImg = document.getElementById('previewOverlayImg') as HTMLImageElement;
   const overlayDate = document.getElementById('previewOverlayDate') as HTMLSpanElement;
   const overlay = document.getElementById('photoPreviewOverlay') as HTMLDivElement;
+  const imgWrapper = overlay?.querySelector('.polaroid-img-wrapper') as HTMLDivElement;
+  const frame = overlay?.querySelector('.polaroid-frame') as HTMLDivElement;
 
   if (overlayImg && overlayDate && overlay) {
-    overlayImg.src = photo.url;
+    if (photo.url) {
+      overlayImg.src = photo.url;
+      if (imgWrapper) imgWrapper.style.display = 'block';
+      if (frame) frame.classList.remove('no-photo');
+    } else {
+      overlayImg.src = '';
+      if (imgWrapper) imgWrapper.style.display = 'none';
+      if (frame) frame.classList.add('no-photo');
+    }
     overlayDate.textContent = photo.dateString;
     
     // Reset animation
@@ -1168,6 +1274,12 @@ const btnClosePreview = document.getElementById('btnClosePreview') as HTMLButton
 if (btnClosePreview) {
   btnClosePreview.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (selectedPinId && pins.some(p => p.id === selectedPinId)) {
+      const confirmDelete = confirm('이 발자취(여행 기록)를 정말로 삭제하시겠습니까?');
+      if (confirmDelete) {
+        deletePin(selectedPinId);
+      }
+    }
     clearPhotoPreview();
   });
 }
@@ -1246,11 +1358,15 @@ const updateVisiblePhotos = (): void => {
     return;
   }
 
+  // Randomly select up to 10 photos
+  const shuffled = [...visiblePhotos].sort(() => 0.5 - Math.random());
+  const selectedPhotos = shuffled.slice(0, 10);
+
   // Render cards
-  photoCountEl.textContent = visiblePhotos.length.toString();
+  photoCountEl.textContent = `${selectedPhotos.length}장 (총 ${visiblePhotos.length}장)`;
   photoGalleryContent.innerHTML = '';
 
-  visiblePhotos.forEach(photo => {
+  selectedPhotos.forEach(photo => {
     const card = document.createElement('div');
     card.className = 'photo-thumb-card';
     card.innerHTML = `
@@ -1298,11 +1414,94 @@ if (chkShowPhotoPreviews) {
   });
 }
 
+// Mobile Sidebar Event Listeners
+if (btnSidebarToggle) {
+  btnSidebarToggle.addEventListener('click', () => {
+    sidebarEl.classList.add('active');
+    sidebarBackdrop.classList.add('active');
+  });
+}
+
+if (btnSidebarClose) {
+  btnSidebarClose.addEventListener('click', closeMobileSidebar);
+}
+
+if (sidebarBackdrop) {
+  sidebarBackdrop.addEventListener('click', closeMobileSidebar);
+}
+
+// My Location tracking logic and marker setup
+const updateMyLocationMarker = (lat: number, lng: number): void => {
+  myLocationLat = lat;
+  myLocationLng = lng;
+  const position = Cesium.Cartesian3.fromDegrees(lng, lat);
+  
+  if (myLocationEntity && viewer.entities.contains(myLocationEntity)) {
+    myLocationEntity.position = position as any;
+  } else {
+    myLocationEntity = viewer.entities.add({
+      position: position,
+      point: {
+        pixelSize: 14,
+        color: Cesium.Color.RED, // Simple red dot
+        outlineColor: Cesium.Color.WHITE,
+        outlineWidth: 3,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY // Keep visible on top
+      }
+    });
+  }
+};
+
+const startTrackingLocation = (): void => {
+  if (navigator.geolocation) {
+    navigator.geolocation.watchPosition(
+      (position) => {
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+        updateMyLocationMarker(lat, lng);
+      },
+      (error) => {
+        console.error('Error tracking location:', error);
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    );
+  }
+};
+
+// My Location Click Handler (HTML5 Geolocation API)
+if (btnMyLocation) {
+  btnMyLocation.addEventListener('click', () => {
+    showToast('현재 위치를 조회하고 있습니다... 📡');
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+        
+        updateMyLocationMarker(lat, lng);
+        
+        stopRotation();
+        viewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(lng, lat, 1000.0), // Fly to 1km height (matches image click)
+          duration: 2.5
+        });
+        showToast('현재 위치로 이동했습니다! 📍');
+      },
+      (error) => {
+        console.error('Error getting geolocation:', error);
+        showToast('현재 위치를 가져올 수 없습니다. GPS 설정과 권한을 확인해주세요. 🔒');
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  });
+}
+
 // 10. Initial Setup Execution
 loadPins();
 renderPinsOnGlobe();
 updateSidebarList();
 loadGeoJson();
+void scanGalleryPhotos();
+startTrackingLocation();
 
 // Showcase initial welcoming message
 setTimeout(() => {
