@@ -9,10 +9,13 @@
     "preview": "vite preview"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.4.0",
     "typescript": "~6.0.2",
     "vite": "^5.4.11"
   },
   "dependencies": {
+    "@capacitor/android": "^8.4.0",
+    "@capacitor/core": "^8.4.0",
     "@zip.js/zip.js": "2.7.34",
     "cesium": "^1.129.0"
   }
