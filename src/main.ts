@@ -29,6 +29,7 @@ let isAddPinMode = false;
 let isRotationEnabled = true;
 let countryFeatures: any[] = [];
 const countriesDataSource = new Cesium.GeoJsonDataSource();
+const galleryDataSource = new Cesium.CustomDataSource('gallery-photos');
 let activePhoto: GalleryPhoto | null = null;
 let activePhotoPinEntity: Cesium.Entity | null = null;
 let selectedPinId: string | null = null;
@@ -78,6 +79,18 @@ function closeMobileSidebar(): void {
     sidebarBackdrop.classList.remove('active');
   }
 }
+
+// Recent Gallery Sidebar Elements
+const recentGallerySection = document.getElementById('recentGallerySection') as HTMLElement | null;
+const recentGalleryList = document.getElementById('recentGalleryList') as HTMLElement | null;
+
+// Gallery Debug Card Elements
+const debugPlatform = document.getElementById('debugPlatform') as HTMLSpanElement | null;
+const debugPermission = document.getElementById('debugPermission') as HTMLSpanElement | null;
+const debugPhotoCount = document.getElementById('debugPhotoCount') as HTMLSpanElement | null;
+const debugStatus = document.getElementById('debugStatus') as HTMLSpanElement | null;
+const debugErrorContainer = document.getElementById('debugErrorContainer') as HTMLElement | null;
+const debugError = document.getElementById('debugError') as HTMLSpanElement | null;
 
 // Photo Upload Modal Elements
 const inputPhotoFile = document.getElementById('inputPhotoFile') as HTMLInputElement;
@@ -144,6 +157,315 @@ window.addEventListener('offline', () => {
 
 // Add the country boundaries vector layer datasource
 viewer.dataSources.add(countriesDataSource);
+viewer.dataSources.add(galleryDataSource);
+
+// Setup gallery clustering properties
+galleryDataSource.clustering.enabled = true;
+galleryDataSource.clustering.pixelRange = 50;
+galleryDataSource.clustering.minimumClusterSize = 2;
+
+// Cache for clustered thumbnails canvas dataURL
+const clusterBillboardCache = new Map<string, string>();
+
+function getOrCreateClusterBillboard(clusterKey: string, imageUrl: string, count: number): Promise<string> {
+  if (clusterBillboardCache.has(clusterKey)) {
+    return Promise.resolve(clusterBillboardCache.get(clusterKey)!);
+  }
+
+  return new Promise((resolve) => {
+    const size = 64; // Clustered bubble is slightly larger than single bubble
+    const borderRadius = 8;
+    const canvas = document.createElement('canvas');
+    canvas.width = size + 16; // Extra padding for top-right numeric badge
+    canvas.height = size + 22; // Extra height for pointer triangle
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      resolve(canvas.toDataURL());
+      return;
+    }
+
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      ctx.save();
+      
+      // 1. Draw bubble pointer pin shape
+      ctx.shadowColor = 'rgba(15, 23, 42, 0.25)';
+      ctx.shadowBlur = 4;
+      ctx.shadowOffsetY = 2;
+      
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.roundRect(8, 8, size, size, borderRadius);
+      ctx.fill();
+      
+      ctx.shadowBlur = 0;
+      ctx.beginPath();
+      ctx.moveTo(size / 2 + 8 - 8, size + 8);
+      ctx.lineTo(size / 2 + 8 + 8, size + 8);
+      ctx.lineTo(size / 2 + 8, size + 14);
+      ctx.closePath();
+      ctx.fill();
+      
+      // 2. Clip and draw image inside
+      ctx.beginPath();
+      const pad = 3;
+      ctx.roundRect(8 + pad, 8 + pad, size - pad * 2, size - pad * 2, borderRadius - 2);
+      ctx.clip();
+      
+      const aspect = img.width / img.height;
+      let drawW = size - pad * 2;
+      let drawH = size - pad * 2;
+      let startX = 8 + pad;
+      let startY = 8 + pad;
+      if (aspect > 1) {
+        drawW = (size - pad * 2) * aspect;
+        startX = 8 + pad - (drawW - (size - pad * 2)) / 2;
+      } else {
+        drawH = (size - pad * 2) / aspect;
+        startY = 8 + pad - (drawH - (size - pad * 2)) / 2;
+      }
+      ctx.drawImage(img, startX, startY, drawW, drawH);
+      
+      ctx.restore(); // Restore context to draw numeric badge on top of clip mask
+
+      // 3. Draw Count Badge on top-right corner of the bubble
+      ctx.shadowColor = 'rgba(6, 182, 212, 0.4)';
+      ctx.shadowBlur = 4;
+      ctx.fillStyle = '#06b6d4';
+      ctx.beginPath();
+      ctx.arc(size + 4, 12, 11, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(count), size + 4, 12);
+      
+      const dataUrl = canvas.toDataURL();
+      clusterBillboardCache.set(clusterKey, dataUrl);
+      resolve(dataUrl);
+    };
+    img.onerror = () => {
+      // Fallback: draw generic circle badge if image fails to load
+      ctx.fillStyle = 'rgba(6, 182, 212, 0.85)';
+      ctx.beginPath();
+      ctx.arc(canvas.width / 2, canvas.height / 2, 20, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(count), canvas.width / 2, canvas.height / 2);
+      
+      const dataUrl = canvas.toDataURL();
+      clusterBillboardCache.set(clusterKey, dataUrl);
+      resolve(dataUrl);
+    };
+    img.src = imageUrl;
+  });
+}
+
+// Dynamic pastel cluster icon canvas helper returning data URL string
+function createClusterIconCanvas(count: number): string {
+  const canvas = document.createElement('canvas');
+  canvas.width = 48;
+  canvas.height = 48;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    ctx.shadowColor = 'rgba(6, 182, 212, 0.4)';
+    ctx.shadowBlur = 6;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(24, 24, 18, 0, Math.PI * 2);
+    ctx.fill();
+    
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(6, 182, 212, 0.85)';
+    ctx.beginPath();
+    ctx.arc(24, 24, 15, 0, Math.PI * 2);
+    ctx.fill();
+    
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(count), 24, 24);
+  }
+  return canvas.toDataURL();
+}
+
+galleryDataSource.clustering.clusterEvent.addEventListener((entities, cluster) => {
+  cluster.label.show = false;
+  cluster.billboard.show = true;
+  cluster.billboard.disableDepthTestDistance = Number.POSITIVE_INFINITY;
+
+  const count = entities.length;
+  // Sort IDs to make a stable cluster cache key
+  const sortedIds = entities.map(e => e.id).sort().join(',');
+
+  // Search for the first valid photo URL in this cluster from the cached allPhotos
+  let photoUrl = '';
+  for (const ent of entities) {
+    const foundPhoto = allPhotos.find(p => p.id === ent.id);
+    if (foundPhoto && foundPhoto.url) {
+      photoUrl = foundPhoto.url;
+      break;
+    }
+  }
+
+  if (photoUrl) {
+    if (clusterBillboardCache.has(sortedIds)) {
+      cluster.billboard.image = clusterBillboardCache.get(sortedIds)!;
+      cluster.billboard.width = 80;  // size 64 + padding 16
+      cluster.billboard.height = 86; // size 64 + padding 22
+    } else {
+      // Use fallback circle badge while loading
+      cluster.billboard.image = createClusterIconCanvas(count);
+      cluster.billboard.width = 48;
+      cluster.billboard.height = 48;
+      
+      // Load cluster micro-thumbnail asynchronously, then trigger redraw
+      void getOrCreateClusterBillboard(sortedIds, photoUrl, count).then(() => {
+        viewer.scene.requestRender();
+      });
+    }
+  } else {
+    cluster.billboard.image = createClusterIconCanvas(count);
+    cluster.billboard.width = 48;
+    cluster.billboard.height = 48;
+  }
+});
+
+// Cache for photos billboard canvas
+const billboardCache = new Map<string, HTMLCanvasElement>();
+
+function getOrCreatePhotoBillboard(photoId: string, url: string): Promise<HTMLCanvasElement> {
+  if (billboardCache.has(photoId)) {
+    return Promise.resolve(billboardCache.get(photoId)!);
+  }
+  
+  return new Promise((resolve) => {
+    const size = 56;
+    const borderRadius = 8;
+    const canvas = document.createElement('canvas');
+    canvas.width = size + 6;
+    canvas.height = size + 12; // Extra height for pointer triangle
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      resolve(canvas);
+      return;
+    }
+
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      ctx.save();
+      ctx.shadowColor = 'rgba(15, 23, 42, 0.25)';
+      ctx.shadowBlur = 4;
+      ctx.shadowOffsetY = 2;
+      
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.roundRect(3, 3, size, size, borderRadius);
+      ctx.fill();
+      
+      ctx.shadowBlur = 0;
+      ctx.beginPath();
+      ctx.moveTo(size / 2 + 3 - 6, size + 3);
+      ctx.lineTo(size / 2 + 3 + 6, size + 3);
+      ctx.lineTo(size / 2 + 3, size + 9);
+      ctx.closePath();
+      ctx.fill();
+      
+      ctx.beginPath();
+      const pad = 3;
+      ctx.roundRect(3 + pad, 3 + pad, size - pad * 2, size - pad * 2, borderRadius - 2);
+      ctx.clip();
+      
+      const aspect = img.width / img.height;
+      let drawW = size - pad * 2;
+      let drawH = size - pad * 2;
+      let startX = 3 + pad;
+      let startY = 3 + pad;
+      if (aspect > 1) {
+        drawW = (size - pad * 2) * aspect;
+        startX = 3 + pad - (drawW - (size - pad * 2)) / 2;
+      } else {
+        drawH = (size - pad * 2) / aspect;
+        startY = 3 + pad - (drawH - (size - pad * 2)) / 2;
+      }
+      ctx.drawImage(img, startX, startY, drawW, drawH);
+      ctx.restore();
+      billboardCache.set(photoId, canvas);
+      resolve(canvas);
+    };
+    img.onerror = () => {
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.roundRect(3, 3, size, size, borderRadius);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(size / 2 + 3 - 6, size + 3);
+      ctx.lineTo(size / 2 + 3 + 6, size + 3);
+      ctx.lineTo(size / 2 + 3, size + 9);
+      ctx.closePath();
+      ctx.fill();
+      
+      ctx.fillStyle = '#06b6d4';
+      ctx.font = '24px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('📸', size / 2 + 3, size / 2 + 3);
+      resolve(canvas);
+    };
+    img.src = url;
+  });
+}
+
+let defaultGalleryIconCanvas: HTMLCanvasElement | null = null;
+function getDefaultGalleryIconCanvas(): HTMLCanvasElement {
+  if (defaultGalleryIconCanvas) return defaultGalleryIconCanvas;
+  
+  const size = 32;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    ctx.shadowColor = 'rgba(15, 23, 42, 0.15)';
+    ctx.shadowBlur = 4;
+    ctx.shadowOffsetY = 1;
+    
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2 - 2, 10, 0, Math.PI * 2);
+    ctx.fill();
+    
+    ctx.beginPath();
+    ctx.moveTo(size / 2 - 4, size / 2 + 4);
+    ctx.lineTo(size / 2 + 4, size / 2 + 4);
+    ctx.lineTo(size / 2, size / 2 + 9);
+    ctx.closePath();
+    ctx.fill();
+    
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#06b6d4';
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('📸', size / 2, size / 2 - 2);
+  }
+  defaultGalleryIconCanvas = canvas;
+  return canvas;
+}
 
 
 
@@ -327,8 +649,16 @@ const updateCountryHighlights = (): void => {
 
 // 4. Create and Render Pins on 3D Globe
 const renderPinsOnGlobe = (): void => {
-  // Clear existing pin entities
+  // Clear existing non-gallery entities
   viewer.entities.removeAll();
+  
+  // Clear existing gallery data source entities
+  galleryDataSource.entities.removeAll();
+
+  // Clear existing travel pin DOM overlays
+  if (travelPinOverlaysContainer) {
+    travelPinOverlaysContainer.innerHTML = '';
+  }
 
   // Re-add active photo pin entity if it exists
   if (activePhoto) {
@@ -350,7 +680,7 @@ const renderPinsOnGlobe = (): void => {
       position: Cesium.Cartesian3.fromDegrees(myLocationLng, myLocationLat),
       point: {
         pixelSize: 14,
-        color: Cesium.Color.RED, // Simple red dot
+        color: Cesium.Color.RED,
         outlineColor: Cesium.Color.WHITE,
         outlineWidth: 3,
         disableDepthTestDistance: Number.POSITIVE_INFINITY
@@ -360,33 +690,22 @@ const renderPinsOnGlobe = (): void => {
     myLocationEntity = null;
   }
 
-  // Add point entities for scanned gallery photos (Cyan camera markers)
+  // Add gallery photos to the clustered galleryDataSource
   allPhotos.forEach((photo) => {
+    if (photo.hasLocation === false) return; // Skip photos without location
+
     const position = Cesium.Cartesian3.fromDegrees(photo.lng, photo.lat);
-    viewer.entities.add({
+    galleryDataSource.entities.add({
       id: photo.id, // e.g. "gp_123"
       position: position,
-      point: {
-        pixelSize: 12,
-        color: Cesium.Color.fromCssColorString('#06b6d4'), // Cyan
-        outlineColor: Cesium.Color.WHITE,
-        outlineWidth: 2,
-        disableDepthTestDistance: Number.POSITIVE_INFINITY
-      },
-      label: {
-        text: '📸',
-        font: '10px Inter, sans-serif',
-        verticalOrigin: Cesium.VerticalOrigin.CENTER,
-        horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+      billboard: {
+        image: getDefaultGalleryIconCanvas(), // default camera pin representation
+        width: 32,
+        height: 32,
         disableDepthTestDistance: Number.POSITIVE_INFINITY
       }
     });
   });
-
-  // Clear existing travel pin DOM overlays
-  if (travelPinOverlaysContainer) {
-    travelPinOverlaysContainer.innerHTML = '';
-  }
 
   pins.forEach((pin) => {
     const position = Cesium.Cartesian3.fromDegrees(pin.lng, pin.lat);
@@ -462,6 +781,8 @@ const renderPinsOnGlobe = (): void => {
 
   // Highlight visited countries based on the current pin list
   updateCountryHighlights();
+  // Trigger viewport photo loading
+  void updateVisibleGalleryThumbnails();
 };
 
 
@@ -539,6 +860,74 @@ const updateSidebarList = (): void => {
     });
 
     destinationContainer.appendChild(card);
+  });
+};
+
+const updateDebugCard = (platform: string, permission: string, count: number, statusStr: string, errorMsg?: string): void => {
+  if (debugPlatform) debugPlatform.textContent = platform;
+  if (debugPermission) {
+    debugPermission.textContent = permission;
+    if (permission.includes('GRANTED')) {
+      debugPermission.className = 'status-granted';
+    } else if (permission.includes('DENIED') || permission.includes('거부') || permission.includes('오류')) {
+      debugPermission.className = 'status-denied';
+    } else {
+      debugPermission.className = 'status-neutral';
+    }
+  }
+  if (debugPhotoCount) debugPhotoCount.textContent = `${count}장`;
+  if (debugStatus) {
+    debugStatus.textContent = statusStr;
+  }
+  if (debugErrorContainer && debugError) {
+    if (errorMsg) {
+      debugError.textContent = errorMsg;
+      debugErrorContainer.style.display = 'block';
+    } else {
+      debugErrorContainer.style.display = 'none';
+    }
+  }
+};
+
+const updateRecentGallerySidebar = (): void => {
+  if (!recentGallerySection || !recentGalleryList) return;
+
+  if (!allPhotos || allPhotos.length === 0) {
+    recentGallerySection.style.display = 'none';
+    return;
+  }
+
+  recentGallerySection.style.display = 'block';
+  recentGalleryList.innerHTML = '';
+
+  // Get the 10 most recent photos (photos are already sorted by DATE_TAKEN DESC in performScan)
+  const recentPhotos = allPhotos.slice(0, 10);
+
+  recentPhotos.forEach(photo => {
+    const isNoGps = photo.hasLocation === false;
+    const item = document.createElement('div');
+    item.className = 'recent-gallery-item' + (isNoGps ? ' no-gps' : '');
+    item.innerHTML = `
+      <img src="${photo.url}" alt="Recent photo" />
+      ${isNoGps ? '<span class="gps-badge">No GPS</span>' : ''}
+    `;
+    
+    // Zoom and show preview on click
+    item.addEventListener('click', () => {
+      if (isNoGps) {
+        showToast('이 사진은 위치 정보(GPS)가 없어 지도상에 이동할 수 없습니다. 📸');
+        return;
+      }
+      stopRotation();
+      viewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(photo.lng, photo.lat, 1000.0),
+        duration: 2.0
+      });
+      showPhotoPreview(photo);
+      showToast(`최근 사진 촬영 장소로 이동했습니다! 📸`);
+    });
+
+    recentGalleryList.appendChild(item);
   });
 };
 
@@ -1062,6 +1451,7 @@ interface GalleryPhoto {
   lat: number;
   lng: number;
   dateString: string;
+  hasLocation?: boolean;
 }
 
 interface GalleryScannerPluginType {
@@ -1071,13 +1461,17 @@ interface GalleryScannerPluginType {
 const GalleryScanner = registerPlugin<GalleryScannerPluginType>('GalleryScanner');
 
 const scanGalleryPhotos = async (): Promise<void> => {
-  if (Capacitor.getPlatform() === 'web') {
+  const currentPlatform = Capacitor.getPlatform();
+  if (currentPlatform === 'web') {
     console.log('Running on web. Keeping mock photos.');
+    updateDebugCard('web (브라우저)', 'N/A (웹 환경)', allPhotos.length, '모의 사진 사용 중 (웹)');
     return;
   }
 
+  updateDebugCard(currentPlatform, '확인 중...', 0, '네이티브 권한 확인 중...');
+
   try {
-    showToast('기기 갤러리에서 위치 정보가 있는 사진을 탐색 중... 📸');
+    showToast('기기 갤러리에서 사진을 동기화하는 중... 📸');
     const result = await GalleryScanner.scanGallery();
     if (result.photos && result.photos.length > 0) {
       allPhotos = result.photos.map(photo => ({
@@ -1085,14 +1479,19 @@ const scanGalleryPhotos = async (): Promise<void> => {
         url: Capacitor.convertFileSrc(photo.url)
       }));
       updateVisiblePhotos();
+      updateRecentGallerySidebar();
       renderPinsOnGlobe(); // Render gallery photo pins directly on the map
       showToast(`성공: 갤러리 사진 ${allPhotos.length}장을 동기화했습니다. 📸`);
+      updateDebugCard(currentPlatform, 'GRANTED (허용됨)', allPhotos.length, '사진 동기화 성공! 📸');
     } else {
-      showToast('위치 정보(GPS)가 포함된 사진이 없습니다. 카메라 앱의 "위치 태그" 설정을 켜주세요! 📸');
+      showToast('갤러리에 사진이 한 장도 없습니다. 📸');
+      updateDebugCard(currentPlatform, 'GRANTED (허용됨)', 0, '갤러리가 비어 있습니다. (사진 0장)');
     }
   } catch (err: any) {
     console.error('Failed to scan gallery photos:', err);
     showToast('갤러리 접근 권한이 필요합니다. 🔒');
+    let errorString = err?.message || String(err);
+    updateDebugCard(currentPlatform, 'DENIED (거부됨) 또는 오류 ❌', 0, '동기화 실패', errorString);
   }
 };
 
@@ -1313,15 +1712,20 @@ declare global {
 }
 
 window.onGalleryPhotosLoaded = (photosJson: string): void => {
+  const currentPlatform = Capacitor.getPlatform();
   try {
     const photos = JSON.parse(photosJson);
     if (Array.isArray(photos)) {
       allPhotos = photos;
       updateVisiblePhotos();
+      updateRecentGallerySidebar();
       showToast(`성공: 갤러리 사진 ${photos.length}장을 동기화했습니다. 📸`);
+      updateDebugCard(currentPlatform, 'GRANTED (허용됨)', allPhotos.length, '브릿지 수신 성공! 📸');
     }
-  } catch (err) {
+  } catch (err: any) {
     console.error('Failed to parse native photos JSON', err);
+    let errorString = err?.message || String(err);
+    updateDebugCard(currentPlatform, 'GRANTED (허용됨)', 0, '브릿지 수신 후 파싱 에러 ❌', errorString);
   }
 };
 
@@ -1346,6 +1750,8 @@ const updateVisiblePhotos = (): void => {
 
   // Filter photos within visible bounds (handling simple boundary wraps)
   const visiblePhotos = allPhotos.filter(photo => {
+    if (photo.hasLocation === false) return false; // Skip photos without GPS
+    
     const lngMatch = east >= west
       ? (photo.lng >= west && photo.lng <= east)
       : (photo.lng >= west || photo.lng <= east);
@@ -1398,6 +1804,94 @@ const updateVisiblePhotos = (): void => {
 // Listen to Cesium camera moveEnd to trigger viewpoint photo updates
 viewer.camera.moveEnd.addEventListener(updateVisiblePhotos);
 
+const updateVisibleGalleryThumbnails = async (): Promise<void> => {
+  if (!isShowPhotoPreviews) {
+    // If previews are disabled, clear custom textures back to default 32x32 camera icons
+    galleryDataSource.entities.values.forEach(entity => {
+      if (entity.billboard && entity.billboard.image && entity.billboard.image.getValue(Cesium.JulianDate.now()) !== getDefaultGalleryIconCanvas()) {
+        entity.billboard.image = new Cesium.ConstantProperty(getDefaultGalleryIconCanvas());
+        entity.billboard.width = new Cesium.ConstantProperty(32);
+        entity.billboard.height = new Cesium.ConstantProperty(32);
+      }
+    });
+    return;
+  }
+
+  const cameraHeight = viewer.camera.positionCartographic.height;
+  const maxLoadHeight = 5000000; // 5,000km
+
+  if (cameraHeight >= maxLoadHeight) {
+    galleryDataSource.entities.values.forEach(entity => {
+      if (entity.billboard && entity.billboard.image && entity.billboard.image.getValue(Cesium.JulianDate.now()) !== getDefaultGalleryIconCanvas()) {
+        entity.billboard.image = new Cesium.ConstantProperty(getDefaultGalleryIconCanvas());
+        entity.billboard.width = new Cesium.ConstantProperty(32);
+        entity.billboard.height = new Cesium.ConstantProperty(32);
+      }
+    });
+    return;
+  }
+
+  const rect = viewer.camera.computeViewRectangle();
+  if (!rect) return;
+
+  const west = Cesium.Math.toDegrees(rect.west);
+  const east = Cesium.Math.toDegrees(rect.east);
+  const south = Cesium.Math.toDegrees(rect.south);
+  const north = Cesium.Math.toDegrees(rect.north);
+
+  // Filter entities within current viewport
+  const visibleEntities = galleryDataSource.entities.values.filter(entity => {
+    const pos = entity.position?.getValue(Cesium.JulianDate.now());
+    if (!pos) return false;
+    const carto = Cesium.Cartographic.fromCartesian(pos);
+    const lng = Cesium.Math.toDegrees(carto.longitude);
+    const lat = Cesium.Math.toDegrees(carto.latitude);
+
+    const lngMatch = east >= west
+      ? (lng >= west && lng <= east)
+      : (lng >= west || lng <= east);
+
+    return lngMatch && lat >= south && lat <= north;
+  });
+
+  // Limit processing count inside current view frame for extreme performance
+  const limitCount = 40;
+  const targetEntities = visibleEntities.slice(0, limitCount);
+
+  // Revert out-of-bounds or excess entities back to the standard small icon
+  galleryDataSource.entities.values.forEach(entity => {
+    if (!targetEntities.includes(entity)) {
+      if (entity.billboard && entity.billboard.image && entity.billboard.image.getValue(Cesium.JulianDate.now()) !== getDefaultGalleryIconCanvas()) {
+        entity.billboard.image = new Cesium.ConstantProperty(getDefaultGalleryIconCanvas());
+        entity.billboard.width = new Cesium.ConstantProperty(32);
+        entity.billboard.height = new Cesium.ConstantProperty(32);
+      }
+    }
+  });
+
+  // Load micro-cached photo frames in background concurrently
+  for (const entity of targetEntities) {
+    const photoId = entity.id;
+    const photo = allPhotos.find(p => p.id === photoId);
+    if (photo && entity.billboard && entity.billboard.image) {
+      const currentImg = entity.billboard.image.getValue(Cesium.JulianDate.now());
+      if (currentImg && currentImg !== getDefaultGalleryIconCanvas()) {
+        continue; // already loaded/cached
+      }
+
+      const canvas = await getOrCreatePhotoBillboard(photo.id, photo.url);
+      // Ensure entity is still present before updating
+      if (galleryDataSource.entities.getById(photoId)) {
+        entity.billboard.image = new Cesium.ConstantProperty(canvas);
+        entity.billboard.width = new Cesium.ConstantProperty(62);
+        entity.billboard.height = new Cesium.ConstantProperty(68);
+      }
+    }
+  }
+};
+
+viewer.camera.moveEnd.addEventListener(updateVisibleGalleryThumbnails);
+
 
 // Photo previews toggle listener
 const chkShowPhotoPreviews = document.getElementById('chkShowPhotoPreviews') as HTMLInputElement;
@@ -1410,6 +1904,7 @@ if (chkShowPhotoPreviews) {
     // Refresh pins rendering
     renderPinsOnGlobe();
     updateOverlayPosition();
+    void updateVisibleGalleryThumbnails();
     showToast(isShowPhotoPreviews ? '사진 프레임이 활성화되었습니다. 📸' : '사진 프레임이 비활성화되었습니다. 📍');
   });
 }
@@ -1496,15 +1991,24 @@ if (btnMyLocation) {
 }
 
 // 10. Initial Setup Execution
-loadPins();
-renderPinsOnGlobe();
-updateSidebarList();
-loadGeoJson();
-void scanGalleryPhotos();
-startTrackingLocation();
+const initApp = async (): Promise<void> => {
+  loadPins();
+  renderPinsOnGlobe();
+  updateSidebarList();
+  updateRecentGallerySidebar();
+  await loadGeoJson();
+  
+  // 1. Scan gallery photos first (requests photo/media permissions)
+  await scanGalleryPhotos();
+  
+  // 2. Start tracking device location (requests GPS location permissions)
+  startTrackingLocation();
+  
+  // Showcase initial welcoming message
+  setTimeout(() => {
+    showToast('지도 위에서 자유롭게 여행지를 찾아보세요! 🗺️');
+  }, 1000);
+};
 
-// Showcase initial welcoming message
-setTimeout(() => {
-  showToast('지도 위에서 자유롭게 여행지를 찾아보세요! 🗺️');
-}, 1000);
+void initApp();
 

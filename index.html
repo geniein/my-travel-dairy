@@ -113,6 +113,43 @@
 
         <div class="divider"></div>
 
+        <!-- Gallery Sync Status Debug Card -->
+        <section class="debug-card" id="galleryDebugCard">
+          <h2 class="section-title" style="color: #0891b2; font-size: 0.85rem; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+            <span>🔍</span> 갤러리 동기화 상태 (디버깅)
+          </h2>
+          <div class="debug-content" style="margin-top: 8px;">
+            <p style="margin: 4px 0; color: #475569; display: flex; justify-content: space-between; font-size: 0.75rem;">
+              <strong>실행 플랫폼:</strong> <span id="debugPlatform" style="font-family: monospace; font-weight: 600;">조회 중...</span>
+            </p>
+            <p style="margin: 4px 0; color: #475569; display: flex; justify-content: space-between; font-size: 0.75rem;">
+              <strong>갤러리 권한:</strong> <span id="debugPermission" style="font-family: monospace; font-weight: 600;">조회 중...</span>
+            </p>
+            <p style="margin: 4px 0; color: #475569; display: flex; justify-content: space-between; font-size: 0.75rem;">
+              <strong>동기화 사진:</strong> <span id="debugPhotoCount" style="font-family: monospace; font-weight: 600;">0장</span>
+            </p>
+            <p style="margin: 4px 0; color: #475569; display: flex; justify-content: space-between; font-size: 0.75rem;">
+              <strong>최근 상태:</strong> <span id="debugStatus" style="font-family: monospace; font-weight: 600; color: #06b6d4;">초기화 중...</span>
+            </p>
+            <p id="debugErrorContainer" style="display: none; margin: 6px 0 0 0; color: #475569; font-size: 0.75rem; border-top: 1px dashed rgba(220, 38, 38, 0.2); padding-top: 6px;">
+              <strong style="color: #dc2626;">에러 로그:</strong> <br/>
+              <span id="debugError" style="font-family: monospace; font-weight: 600; color: #dc2626; background: rgba(220, 38, 38, 0.05); padding: 4px; border-radius: 4px; display: block; word-break: break-all; margin-top: 4px;"></span>
+            </p>
+          </div>
+        </section>
+
+        <div class="divider"></div>
+
+        <!-- Recent Synced Gallery Photos -->
+        <section class="recent-gallery-section" id="recentGallerySection" style="display: none;">
+          <h2 class="section-title">동기화된 최근 사진 (10장)</h2>
+          <div class="recent-gallery-list" id="recentGalleryList">
+            <!-- Synced photo thumbnails will go here -->
+          </div>
+        </section>
+
+        <div class="divider"></div>
+
         <section class="destination-list">
           <h2 class="section-title">최근 다녀온 여행지</h2>
           <div class="scroll-container" id="destinationContainer">

@@ -23,7 +23,9 @@ import com.getcapacitor.annotation.PermissionCallback;
 
 import java.io.InputStream;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
 @CapacitorPlugin(
@@ -57,6 +59,19 @@ public class GalleryScannerPlugin extends Plugin {
 
     private static final String TAG = "GalleryScannerPlugin";
 
+    private boolean checkGalleryPermissions() {
+        Context context = getContext();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            boolean hasImages = context.checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED;
+            boolean hasSelected = context.checkSelfPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == PackageManager.PERMISSION_GRANTED;
+            return (hasImages || hasSelected);
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            return context.checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED;
+        } else {
+            return context.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
+        }
+    }
+
     @PluginMethod
     public void scanGallery(PluginCall call) {
         String alias;
@@ -68,15 +83,7 @@ public class GalleryScannerPlugin extends Plugin {
             alias = "gallery";
         }
 
-        boolean isGranted = false;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            boolean hasImages = getContext().checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED;
-            boolean hasSelected = getContext().checkSelfPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == PackageManager.PERMISSION_GRANTED;
-            boolean hasLocation = getContext().checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION) == PackageManager.PERMISSION_GRANTED;
-            isGranted = (hasImages || hasSelected) && hasLocation;
-        } else {
-            isGranted = getPermissionState(alias) == PermissionState.GRANTED;
-        }
+        boolean isGranted = checkGalleryPermissions();
 
         if (!isGranted) {
             requestPermissionForAlias(alias, call, "galleryCallback");
@@ -87,16 +94,7 @@ public class GalleryScannerPlugin extends Plugin {
 
     @PermissionCallback
     private void galleryCallback(PluginCall call) {
-        boolean isGranted = false;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            boolean hasImages = getContext().checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED;
-            boolean hasSelected = getContext().checkSelfPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == PackageManager.PERMISSION_GRANTED;
-            boolean hasLocation = getContext().checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION) == PackageManager.PERMISSION_GRANTED;
-            isGranted = (hasImages || hasSelected) && hasLocation;
-        } else {
-            String alias = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU ? "gallery_sdk33" : "gallery";
-            isGranted = getPermissionState(alias) == PermissionState.GRANTED;
-        }
+        boolean isGranted = checkGalleryPermissions();
 
         if (isGranted) {
             performScan(call);
@@ -106,11 +104,9 @@ public class GalleryScannerPlugin extends Plugin {
     }
 
     private void performScan(PluginCall call) {
-        // Run on a standard background Thread to prevent UI freezes / ANRs and ensure compatibility
+        // Run on a background Thread to prevent UI freezes/ANRs
         new Thread(() -> {
             Context context = getContext();
-            JSArray photosArray = new JSArray();
-
             Uri queryUri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
             String[] projection = {
                 MediaStore.Images.Media._ID,
@@ -121,9 +117,24 @@ public class GalleryScannerPlugin extends Plugin {
 
             String sortOrder = MediaStore.Images.Media.DATE_TAKEN + " DESC";
             
-            // Limit scanning to the most recent 500 photos for blazingly fast startup
-            int maxScanLimit = 500;
-            int scannedCount = 0;
+            // Limit scanning to the most recent 10,000 photos for deep history
+            int maxScanLimit = 10000;
+
+            // Helper class to store intermediate photo meta before parallel EXIF lookup
+            class PhotoItem {
+                long id;
+                long dateTaken;
+                double dbLat;
+                double dbLng;
+                boolean hasDbLocation;
+                
+                // Outputs resolved during execution
+                double finalLat = 0.0;
+                double finalLng = 0.0;
+                boolean hasLocation = false;
+            }
+
+            List<PhotoItem> items = new ArrayList<>();
 
             try (Cursor cursor = context.getContentResolver().query(
                     queryUri,
@@ -138,90 +149,114 @@ public class GalleryScannerPlugin extends Plugin {
                     int latColIndex = cursor.getColumnIndex("latitude");
                     int lngColIndex = cursor.getColumnIndex("longitude");
 
-                    SimpleDateFormat sdf = new SimpleDateFormat("yyyy.MM.dd", Locale.getDefault());
-
                     do {
-                        long id = cursor.getLong(idColumn);
-                        long dateTaken = cursor.getLong(dateTakenColumn);
+                        PhotoItem item = new PhotoItem();
+                        item.id = cursor.getLong(idColumn);
+                        item.dateTaken = cursor.getLong(dateTakenColumn);
 
-                        Uri photoUri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
-
-                        double dbLat = 0.0;
-                        double dbLng = 0.0;
-                        boolean hasDbLocation = false;
                         if (latColIndex != -1 && lngColIndex != -1) {
                             if (!cursor.isNull(latColIndex) && !cursor.isNull(lngColIndex)) {
-                                dbLat = cursor.getDouble(latColIndex);
-                                dbLng = cursor.getDouble(lngColIndex);
-                                if (dbLat != 0.0 || dbLng != 0.0) {
-                                    hasDbLocation = true;
+                                item.dbLat = cursor.getDouble(latColIndex);
+                                item.dbLng = cursor.getDouble(lngColIndex);
+                                if (item.dbLat != 0.0 || item.dbLng != 0.0) {
+                                    item.hasDbLocation = true;
                                 }
                             }
                         }
-
-                        float[] latLng = new float[2];
-                        boolean hasLocation = false;
-
-                        if (hasDbLocation) {
-                            latLng[0] = (float) dbLat;
-                            latLng[1] = (float) dbLng;
-                            hasLocation = true;
-                            Log.d(TAG, "Location found in MediaStore DB for photo ID " + id + ": " + latLng[0] + ", " + latLng[1]);
-                        } else {
-                            // Fallback to ExifInterface (opens input stream to read EXIF metadata)
-                            try {
-                                Uri originalUri = photoUri;
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                    try {
-                                        originalUri = MediaStore.setRequireOriginal(photoUri);
-                                    } catch (Exception e) {
-                                        Log.w(TAG, "setRequireOriginal failed for ID " + id + ", falling back to standard URI: " + e.getMessage());
-                                        originalUri = photoUri;
-                                    }
-                                }
-                                try (InputStream stream = context.getContentResolver().openInputStream(originalUri)) {
-                                    if (stream != null) {
-                                        ExifInterface exif = new ExifInterface(stream);
-                                        if (exif.getLatLong(latLng)) {
-                                            hasLocation = true;
-                                            Log.d(TAG, "Location found via EXIF for photo ID " + id + ": " + latLng[0] + ", " + latLng[1]);
-                                        }
-                                    }
-                                }
-                            } catch (Exception e) {
-                                Log.d(TAG, "Location metadata not found in EXIF/DB for photo ID " + id + ": " + e.getMessage());
-                            }
-                        }
-
-                        if (hasLocation) {
-                            JSObject photoObj = new JSObject();
-                            photoObj.put("id", "gp_" + id);
-                            photoObj.put("url", photoUri.toString());
-                            photoObj.put("lat", latLng[0]);
-                            photoObj.put("lng", latLng[1]);
-
-                            String dateStr = dateTaken > 0 ? sdf.format(new Date(dateTaken)) : sdf.format(new Date());
-                            photoObj.put("dateString", dateStr);
-
-                            photosArray.put(photoObj);
-                        }
-
-                        scannedCount++;
-                        if (scannedCount >= maxScanLimit) {
+                        
+                        items.add(item);
+                        if (items.size() >= maxScanLimit) {
                             break;
                         }
-
                     } while (cursor.moveToNext());
                 }
-
-                JSObject result = new JSObject();
-                result.put("photos", photosArray);
-                call.resolve(result);
-
             } catch (Exception e) {
-                Log.e(TAG, "Error scanning gallery database", e);
-                call.reject("Error scanning gallery database: " + e.getMessage());
+                Log.e(TAG, "Error querying media provider", e);
+                call.reject("Error querying media provider: " + e.getMessage());
+                return;
             }
+
+            if (items.isEmpty()) {
+                JSObject result = new JSObject();
+                result.put("photos", new JSArray());
+                call.resolve(result);
+                return;
+            }
+
+            // Process EXIF metadata extraction in parallel
+            int numCores = Runtime.getRuntime().availableProcessors();
+            java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(Math.max(2, numCores));
+            List<java.util.concurrent.Callable<Void>> tasks = new ArrayList<>();
+
+            for (PhotoItem item : items) {
+                tasks.add(() -> {
+                    if (item.hasDbLocation) {
+                        item.finalLat = item.dbLat;
+                        item.finalLng = item.dbLng;
+                        item.hasLocation = true;
+                    } else {
+                        // Fallback to ExifInterface (opens input stream to read EXIF metadata)
+                        Uri photoUri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, item.id);
+                        try {
+                            Uri originalUri = photoUri;
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                try {
+                                    originalUri = MediaStore.setRequireOriginal(photoUri);
+                                } catch (Exception e) {
+                                    originalUri = photoUri;
+                                }
+                            }
+                            try (InputStream stream = context.getContentResolver().openInputStream(originalUri)) {
+                                if (stream != null) {
+                                    ExifInterface exif = new ExifInterface(stream);
+                                    float[] latLng = new float[2];
+                                    if (exif.getLatLong(latLng)) {
+                                        item.finalLat = latLng[0];
+                                        item.finalLng = latLng[1];
+                                        item.hasLocation = true;
+                                    }
+                                }
+                            }
+                        } catch (Exception e) {
+                            // Silently ignore EXIF read failure for individual photo
+                        }
+                    }
+                    return null;
+                });
+            }
+
+            try {
+                executor.invokeAll(tasks);
+                executor.shutdown();
+            } catch (InterruptedException e) {
+                Log.e(TAG, "Parallel EXIF scanning was interrupted", e);
+                call.reject("Scan interrupted: " + e.getMessage());
+                return;
+            }
+
+            // Build result array preserving the original date sort order
+            JSArray photosArray = new JSArray();
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy.MM.dd", Locale.getDefault());
+
+            for (PhotoItem item : items) {
+                Uri photoUri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, item.id);
+                JSObject photoObj = new JSObject();
+                photoObj.put("id", "gp_" + item.id);
+                photoObj.put("url", photoUri.toString());
+                photoObj.put("lat", item.hasLocation ? item.finalLat : 0.0);
+                photoObj.put("lng", item.hasLocation ? item.finalLng : 0.0);
+                photoObj.put("hasLocation", item.hasLocation);
+
+                String dateStr = item.dateTaken > 0 ? sdf.format(new Date(item.dateTaken)) : sdf.format(new Date());
+                photoObj.put("dateString", dateStr);
+
+                photosArray.put(photoObj);
+            }
+
+            JSObject result = new JSObject();
+            result.put("photos", photosArray);
+            call.resolve(result);
+
         }).start();
     }
 }
